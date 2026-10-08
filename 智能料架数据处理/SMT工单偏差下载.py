@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import requests
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
@@ -125,4 +127,4 @@ def main():
     print(f"数据已保存至 {out_file}，共 {len(items)} 条记录")
 
 if __name__ == "__main__":
-    main()PASCAL_8466to9265
+    main()
