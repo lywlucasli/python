@@ -20,16 +20,31 @@
 - 仅修改过的行（Book quantity 有变化），并带原值对照列
 
 依赖：
-    pip install openpyxl pandas
+    pip install openpyxl pandas xlrd
 """
 
 import os
+import sys
 import threading
 from decimal import Decimal, getcontext
 
-import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+# 启动前检查依赖
+try:
+    import pandas as pd
+except ImportError:
+    tk.Tk().withdraw()
+    messagebox.showerror("缺少依赖", "请先在命令行运行：\npip install pandas")
+    sys.exit(1)
+
+try:
+    import openpyxl
+except ImportError:
+    tk.Tk().withdraw()
+    messagebox.showerror("缺少依赖", "缺少 Excel 读写引擎，请先在命令行运行：\npip install openpyxl")
+    sys.exit(1)
 
 getcontext().prec = 50
 
@@ -57,14 +72,6 @@ def fmt_decimal(d: Decimal):
 
 
 def parse_pasted_offsets(text: str, log):
-    """
-    解析粘贴的偏差文本。
-    支持：
-      PN<TAB>QTY
-      PN,QTY
-      PN 空格 QTY
-    忽略表头行（PN/QTY/Material/Quantity 等）。
-    """
     offsets = {}
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
@@ -102,7 +109,11 @@ def parse_pasted_offsets(text: str, log):
 
 
 def read_offsets_from_excel(path, log):
-    off_df = pd.read_excel(path)
+    try:
+        off_df = pd.read_excel(path)
+    except Exception as e:
+        raise ValueError(f"读取偏差Excel失败，请确保文件未加密且包含数据。\n详细错误：{e}")
+
     pn_col = None
     qty_col = None
     for c in off_df.columns:
@@ -131,7 +142,10 @@ def process(inventory_path, offsets, output_path, group_mode, sort_mode,
     log(f"偏差表共 {len(offsets)} 个 PN")
 
     log("读取库存文件...")
-    inv_df = pd.read_excel(inventory_path)
+    try:
+        inv_df = pd.read_excel(inventory_path)
+    except Exception as e:
+        raise ValueError(f"读取库存Excel失败，请检查文件是否被占用或损坏。\n详细错误：{e}")
 
     required = ["Phys. Inventory Doc.", "Material", "Batch", "Storage Location", "Book quantity"]
     for col in required:
@@ -223,7 +237,13 @@ def process(inventory_path, offsets, output_path, group_mode, sort_mode,
     out_df = out_df.drop(columns=[c for c in drop_cols if c in out_df.columns])
 
     log("写出结果...")
-    out_df.to_excel(output_path, index=False)
+    try:
+        # 强制指定引擎，避免大小写扩展名问题
+        out_df.to_excel(output_path, index=False, engine='openpyxl')
+    except PermissionError:
+        raise ValueError(f"无法写入文件，请检查【{os.path.basename(output_path)}】是否正在 Excel 中打开！")
+    except Exception as e:
+        raise ValueError(f"保存Excel失败：{e}")
 
     report_path = os.path.splitext(output_path)[0] + "_warnings.txt"
     with open(report_path, "w", encoding="utf-8") as f:
