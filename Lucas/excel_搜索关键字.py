@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from pathlib import Path
 import warnings
+import re
 
 warnings.filterwarnings("ignore")
 
@@ -158,7 +159,7 @@ class ModernExcelSearchTool:
         self.search_entry.pack(side="left", fill="x", expand=True, padx=10)
         self.search_entry.bind('<Return>', lambda e: self.perform_search())
         
-        self.search_entry.insert(0, "输入关键字 (支持 * 和 ?)")
+        self.search_entry.insert(0, "支持 * 和 ? 通配符，也支持多行粘贴")
         self.search_entry.config(fg=self.colors["text_sub"])
         self.search_entry.bind("<FocusIn>", self.on_entry_focus_in)
         self.search_entry.bind("<FocusOut>", self.on_entry_focus_out)
@@ -196,11 +197,9 @@ class ModernExcelSearchTool:
         self.tree.tag_configure('odd', background='#FFFFFF')
         self.tree.tag_configure('even', background='#F9FAFB')
         self.tree.bind("<<TreeviewSelect>>", self.on_result_select)
-
-        # 支持主表格 Ctrl+C 复制
         self.tree.bind("<Control-c>", self.copy_main_row)
 
-        # ================= 底部：详细预览 (可复制文本) =================
+        # ================= 底部：详细预览 =================
         preview_card = tk.Frame(main, bg=self.colors["card_bg"], highlightthickness=1, highlightbackground=self.colors["border"])
         preview_card.pack(fill="x", pady=(0, 15))
 
@@ -217,7 +216,6 @@ class ModernExcelSearchTool:
         preview_container.grid_rowconfigure(0, weight=1)
         preview_container.grid_columnconfigure(0, weight=1)
 
-        # 【核心修复】改回使用 Text 组件，以便支持鼠标拖拽选中和 Ctrl+C
         self.preview_text = tk.Text(preview_container, height=7, wrap="none", font=self.fonts["mono"], 
                                     bg=self.colors["preview_bg"], bd=0, highlightthickness=0, padx=5, pady=5)
         self.preview_text.grid(row=0, column=0, sticky="nsew")
@@ -226,11 +224,9 @@ class ModernExcelSearchTool:
         p_vsb.grid(row=0, column=1, sticky="ns")
         self.preview_text.configure(yscrollcommand=p_vsb.set)
         
-        # 高亮配置
         self.preview_text.tag_configure("highlight", background="#FEF08A", foreground="#DC2626")
         self.preview_text.tag_configure("current_row", background=self.colors["highlight_row"], font=(self.fonts["mono"][0], 10, "bold"))
         
-        # 支持右键复制菜单
         self.text_menu = tk.Menu(self.root, tearoff=0, font=self.fonts["small"])
         self.text_menu.add_command(label="📋 复制选中文本", command=lambda: self.preview_text.event_generate("<<Copy>>"))
         self.preview_text.bind("<Button-3>", self.show_text_menu)
@@ -248,20 +244,16 @@ class ModernExcelSearchTool:
         self.progress_bar = ttk.Progressbar(status_frame, style="Modern.Horizontal.TProgressbar", mode='determinate')
         self.progress_bar.pack(fill="x", pady=(0, 5))
 
-        # 绑定全局滚轮事件
         self.tree.bind("<MouseWheel>", lambda e: self.tree.yview_scroll(int(-1*(e.delta/120)), "units"))
         self.preview_text.bind("<MouseWheel>", lambda e: self.preview_text.yview_scroll(int(-1*(e.delta/120)), "units"))
 
     def show_text_menu(self, event):
-        """预览区右键菜单"""
         try:
             self.text_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.text_menu.grab_release()
 
-    # =================== 复制功能逻辑 ===================
     def copy_main_row(self, event=None):
-        """复制主表格中选中的行 (Ctrl+C)"""
         selected = self.tree.selection()
         if not selected: return
         item = self.tree.item(selected[0])
@@ -275,18 +267,16 @@ class ModernExcelSearchTool:
         self.status_label.config(text="✅ 已复制主表格行内容到剪贴板", fg=self.colors["success"])
         self.root.after(2000, lambda: self.status_label.config(text="就绪", fg=self.colors["text_sub"]))
 
-    # =================== 焦点与占位符 ===================
     def on_entry_focus_in(self, event):
-        if self.search_entry.get() == "输入关键字 (支持 * 和 ?)":
+        if self.search_entry.get() == "支持 * 和 ? 通配符，也支持多行粘贴":
             self.search_entry.delete(0, tk.END)
             self.search_entry.config(fg=self.colors["text_main"])
 
     def on_entry_focus_out(self, event):
         if not self.search_entry.get():
-            self.search_entry.insert(0, "输入关键字 (支持 * 和 ?)")
+            self.search_entry.insert(0, "支持 * 和 ? 通配符，也支持多行粘贴")
             self.search_entry.config(fg=self.colors["text_sub"])
 
-    # =================== 核心操作 ===================
     def toggle_buttons(self, state):
         self.update_index_btn.config(state=state)
         self.search_btn.config(state=state)
@@ -412,9 +402,10 @@ class ModernExcelSearchTool:
 
         self.ui_queue.put(('index_done', (updated_count, skipped_count, error_list)))
 
+    # =================== 核心修复：多通配符智能检索 ===================
     def perform_search(self):
         keyword = self.search_entry.get().strip()
-        if not keyword or keyword == "输入关键字 (支持 * 和 ?)":
+        if not keyword or keyword == "支持 * 和 ? 通配符，也支持多行粘贴":
             messagebox.showwarning("提示", "请输入搜索关键字")
             return
         if self.is_processing: return
@@ -431,19 +422,38 @@ class ModernExcelSearchTool:
         self.progress_bar["mode"] = "indeterminate"
         self.progress_bar.start(10)
 
-        sql_pattern = keyword
-        if '*' not in sql_pattern and '?' not in sql_pattern:
-            sql_pattern = f"%{sql_pattern}%"
-        else:
-            sql_pattern = sql_pattern.replace('*', '%').replace('?', '_')
+        # 1. 处理多行粘贴输入 (支持你一次性粘贴多个料号)
+        raw_keywords = [k.strip() for k in keyword.split('\n') if k.strip()]
+        
+        # 2. 将用户的 * 语法转换为 SQL LIKE 语法
+        sql_patterns = []
+        for kw in raw_keywords:
+            # 连续多个星号(如 ******)会被合并为一个 %
+            cleaned_kw = re.sub(r'\*+', '*', kw)
+            
+            if '*' not in cleaned_kw and '?' not in cleaned_kw:
+                sql_pat = f"%{cleaned_kw}%"
+            else:
+                sql_pat = cleaned_kw.replace('*', '%').replace('?', '_')
+            
+            # 如果用户用了星号但没全包含，自动补两头，确保搜索范围广
+            if not sql_pat.startswith('%'): sql_pat = "%" + sql_pat
+            if not sql_pat.endswith('%'): sql_pat = sql_pat + "%"
+            
+            sql_patterns.append(sql_pat)
 
-        threading.Thread(target=self._search_db_worker, args=(sql_pattern,), daemon=True).start()
+        # 3. 拼装多条件 SQL
+        # 如果输入了多个料号，使用 OR 连接
+        conditions = " OR ".join(["content LIKE ?"] * len(sql_patterns))
+        final_sql = f"SELECT file_name, sheet_name, row_idx, content, file_path FROM data WHERE {conditions} LIMIT 3000"
 
-    def _search_db_worker(self, sql_pattern):
+        threading.Thread(target=self._search_db_worker, args=(final_sql, sql_patterns), daemon=True).start()
+
+    def _search_db_worker(self, final_sql, params):
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cur = conn.cursor()
-                cur.execute("SELECT file_name, sheet_name, row_idx, content, file_path FROM data WHERE content LIKE ? LIMIT 2000", (sql_pattern,))
+                cur.execute(final_sql, tuple(params))
                 rows = cur.fetchall()
                 
                 batch_size = 50
@@ -513,16 +523,18 @@ class ModernExcelSearchTool:
         kw = self.current_search_keyword
         if not kw: return
         
-        clean_kw = kw.replace('*', '').replace('?', '')
-        if not clean_kw: return
+        # 针对多行粘贴的情况，把每一行的去星号结果都高亮
+        clean_kws = [k.strip().replace('*', '').replace('?', '') for k in kw.split('\n') if k.strip()]
         
-        idx = '1.0'
-        while True:
-            idx = self.preview_text.search(clean_kw, idx, nocase=True, stopindex=tk.END)
-            if not idx: break
-            last_idx = f"{idx}+{len(clean_kw)}c"
-            self.preview_text.tag_add("highlight", idx, last_idx)
-            idx = last_idx
+        for clean_kw in clean_kws:
+            if not clean_kw: continue
+            idx = '1.0'
+            while True:
+                idx = self.preview_text.search(clean_kw, idx, nocase=True, stopindex=tk.END)
+                if not idx: break
+                last_idx = f"{idx}+{len(clean_kw)}c"
+                self.preview_text.tag_add("highlight", idx, last_idx)
+                idx = last_idx
 
     def open_selected_file(self):
         if not self.current_selected_file_path: return
